@@ -45,7 +45,6 @@ boxplot(qualAsMatrix[1:10000,], outline=F)
 # See BS genome notes for how to download genome
 library(BSgenome.Mmusculus.UCSC.mm10)
 library(TxDb.Mmusculus.UCSC.mm10.knownGene)
-library(BSgenome.Mmusculus.UCSC.mm10)
 BSgenome.Mmusculus.UCSC.mm10
 
 # Pick chromosomes of interest,store the sequences and turn them into DNAStringSet
