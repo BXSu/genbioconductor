@@ -1,0 +1,118 @@
+
+## ----shortreada,include=FALSE-------------------------------------------------
+library(ShortRead)
+library(ggplot2)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+
+fastq <- readFastq("data/ENCFF332KDA_sampled.fastq.gz")
+
+## Step 1- Quality control
+readSequences <- sread(fastq)
+readSequences_AlpbyCycle <- alphabetByCycle(readSequences)
+readSequences_AlpbyCycle[1:4,1:4]
+
+library(ggplot2)
+AFreq <- readSequences_AlpbyCycle["A",]
+CFreq <- readSequences_AlpbyCycle["C",]
+GFreq <- readSequences_AlpbyCycle["G",]
+TFreq <- readSequences_AlpbyCycle["T",]
+
+# Graph 1- It is normal to have some variations in the first few cycles of RNA-seq.
+# This graph shows the frequency of a base in each cycle
+
+toPlot <- data.frame(Count=c(AFreq,CFreq,GFreq,TFreq),
+                     Cycle=rep(1:50,4),
+                     Base=rep(c("A","C","G","T"),each=50))
+
+# Graph 2
+ggplot(toPlot,aes(y=Count,x=Cycle,colour=Base))+geom_line()+theme_bw()
+
+readQuality <- quality(fastq)
+readQualityScores <- alphabetScore(readQuality)
+toPlot <- data.frame(ReadQ=readQualityScores)
+head(toPlot)
+
+# Graph 3- High quality reads are on the right hand side
+ggplot(toPlot,aes(x=ReadQ))+geom_histogram()+theme_minimal()
+
+# Graph 4- Similar information as graph 1
+qualAsMatrix <- as(readQuality,"matrix")
+boxplot(qualAsMatrix[1:10000,], outline=F)
+
+## Step 2- Alignment
+
+# 2.1 Build reference genome
+# See BS genome notes for how to download genome
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(BSgenome.Mmusculus.UCSC.mm10)
+BSgenome.Mmusculus.UCSC.mm10
+
+# Pick chromosomes of interest,store the sequences and turn them into DNAStringSet
+mainChromosomes <- paste0("chr",c(1:19,"X","Y","M"))
+mainChrSeq <- lapply(mainChromosomes,
+                     function(x) BSgenome.Mmusculus.UCSC.mm10[[x]])
+names(mainChrSeq) <- mainChromosomes
+mainChrSeqSet <- DNAStringSet(mainChrSeq)
+mainChrSeqSet
+
+# Save the sequences you just built
+writeXStringSet(mainChrSeqSet,"BSgenome.Mmusculus.UCSC.mm10.mainChrs.fa")
+
+# Step 2.2- Indexing; use at most half of the memory of your computer
+library(Rsubread)
+buildindex("mm10_mainchrs","BSgenome.Mmusculus.UCSC.mm10.mainChrs.fa",memory=8000,indexSplit=TRUE)
+
+# Step 2.3- Find annotation file from UCSC
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+myExons <- exons(TxDb.Mmusculus.UCSC.mm10.knownGene,columns=c("tx_id","gene_id"))
+myExons <- myExons[lengths(myExons$gene_id) == 1]
+myExons
+
+# Make SAF format
+dfExons <- as.data.frame(myExons)
+SAF <- data.frame(GeneID=dfExons$gene_id,
+                  Chr=dfExons$seqnames,
+                  Start=dfExons$start,
+                  End=dfExons$end,
+                  Strand=dfExons$strand)
+
+# Make alignment
+myMapped <- subjunc("mm10_mainchrs", "ENCFF332KDA.fastq.gz", output_format = "BAM",
+                    output_file = "Treg_1.bam", useAnnotation = TRUE, annot.ext = SAF, isGTF = FALSE,
+                    nthreads = 4)
+
+library(Rsamtools)
+# Sort BAM files by position
+sortBam("Treg_1.bam", "Sorted_Treg_1")
+indexBam("Sorted_Treg_1.bam")
+# Now you can upload the file on IGV for viewing
+
+# Step 3: Assign reads to genes to quantify gene expression level
+
+# Step 3.1- Make GRangesList with each item in the list corresponding to a gene;
+# Within each entry a GRanges object of the genes' exons
+
+geneExons <- exonsBy(TxDb.Mmusculus.UCSC.mm10.knownGene, by = "gene")
+
+# Step 3.2- Counting how many reads in each exon: better to use nonoverlapping
+library(GenomicAlignments)
+myBam <- BamFile("Sorted_Treg_1.bam", yieldSize = 10000)
+tregGeneCounts <- summarizeOverlaps(geneExons, myBam, ignore.strand = TRUE)
+tregGeneCounts
+
+# Step 3.2(note)- how to deal with overlapping genes
+library(GenomicFeatures)
+nonOverlappingExons <- disjointExons(TxDb.Mmusculus.UCSC.mm10.knownGene)
+names(nonOverlappingExons) <- paste(mcols(nonOverlappingExons)$gene_id, mcols(nonOverlappingExons)$exonic_part,
+                                    sep = "_")
+tregExonCounts <- summarizeOverlaps(nonOverlappingExons, myBam, ignore.strand = TRUE,
+                                    inter.feature = FALSE)
+
+# Step 3.3: retrieve counts using the assay() function
+geneCounts <- assay(tregGeneCounts)
+exonCounts <- assay(tregExonCounts)
+
+
+
+
